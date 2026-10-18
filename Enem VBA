@@ -392,9 +392,7 @@ Public Function ExportFilteredToFile(Optional ByVal initialName As String = "") 
 ErrHandler:
     ExportFilteredToFile = False
 End Function
---------------------------------------------------------------------------------------------------------------------------------------------
 
-'
     UserForm (frmEnem)
 
     Crie um UserForm no Editor VBA chamado frmEnem.
@@ -412,8 +410,9 @@ End Function
         btnExportar (CommandButton)
         lblInfo (Label) — "Registros: 0 | Filtrados: 0"
 
-  'Cole este código no code-behind do UserForm (frmEnem):
-----------------------------------------------------------------------------------------------------------------------------------
+Cole este código no code-behind do UserForm (frmEnem):
+vb
+
 ' UserForm: frmEnem
 Option Explicit
 
@@ -556,10 +555,418 @@ Private Sub btnExportar_Click()
         MsgBox "❌ Erro ao exportar.", vbExclamation
     End If
 End Sub
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Perfeito — entendi como “sim” para a versão mais robusta, usando Selenium Basic + Chrome no Excel/VBA.
+
+Essa opção é melhor que IE porque:
+
+    funciona mais facilmente com sites modernos,
+    não depende do Internet Explorer,
+    é bem próxima ao comportamento do seu script Python.
+
+Abaixo está a versão pronta para Excel:
+
+    UserForm com filtros e tabela
+    Extração do site com Chrome + Selenium Basic
+    Carregar Excel
+    Filtros por escola / estado / cidade / notas
+    Exportar em Excel
+
+Requisitos
+
+    Instalar SeleniumBasic no Excel:
+        Baixe em: https://github.com/florentbr/SeleniumBasic/releases
+        Instale o pacote “SeleniumBasic”
+    Baixar ChromeDriver:
+        Verifique a versão do seu Chrome
+        Baixe o ChromeDriver compatível
+        Coloque em uma pasta no PATH do Windows, por exemplo: C:\SeleniumDriver\chromedriver.exe
+    No VBA:
+        Tools > References
+        Marque:
+            Selenium Type Library
+            Microsoft Forms 2.0 Object Library
+            Microsoft Office xx.x Object Library
+
+Módulo 1: cole isso em um módulo padrão chamado Module1
 
 
+'Option Explicit
 
+Public DataArr As Variant
+Public HeaderArr As Variant
+Public FilteredArr As Variant
+Public DataLoaded As Boolean
 
+Public Sub ShowEnemAnalyzer()
+    frmEnem.Show vbModeless
+End Sub
 
+Public Function SafeRows(arr As Variant) As Long
+    On Error GoTo Erro
+    SafeRows = UBound(arr, 1) + 1
+    Exit Function
+Erro:
+    SafeRows = 0
+End Function
 
+Public Function SafeCols(arr As Variant) As Long
+    On Error GoTo Erro
+    SafeCols = UBound(arr, 2) + 1
+    Exit Function
+Erro:
+    SafeCols = 0
+End Function
+
+Public Function ExtractDataFromSite(ByVal url As String, Optional ByVal maxPages As Long = 320, Optional ByVal maxRows As Long = 15959) As Boolean
+    On Error GoTo ErrHandler
+    
+    Dim driver As WebDriver
+    Dim table As WebElement
+    Dim rows As WebElements
+    Dim row As WebElement
+    Dim cells As WebElements
+    Dim cell As WebElement
+    
+    Dim pageCount As Long
+    Dim totalRows As Long
+    Dim rowIdx As Long
+    Dim colIdx As Long
+    Dim colCount As Long
+    Dim foundRows As Collection
+    Dim tmpArr() As String
+    Dim dataLine As Variant
+    
+    Dim nextBtn As WebElement
+    
+    Set foundRows = New Collection
+    pageCount = 1
+    totalRows = 0
+    
+    Set driver = New ChromeDriver
+    driver.Start "chrome"
+    driver.Get url
+    
+    ' Espera carregamento básico
+    driver.Manage.Timeouts.ImplicitWait = 5000
+    
+    Do While pageCount <= maxPages And totalRows < maxRows
+        On Error Resume Next
+        Set table = driver.FindElementByCss("table")
+        On Error GoTo ErrHandler
+        
+        If table Is Nothing Then Exit Do
+        
+        Set rows = table.FindElementsByCss("tbody tr")
+        If rows.Count = 0 Then Exit Do
+        
+        For Each row In rows
+            Set cells = row.FindElementsByCss("td")
+            If cells.Count > 0 Then
+                ReDim tmpArr(0 To cells.Count - 1)
+                colIdx = 0
+                For Each cell In cells
+                    tmpArr(colIdx) = Trim$(cell.Text)
+                    colIdx = colIdx + 1
+                Next cell
+                foundRows.Add tmpArr
+                totalRows = totalRows + 1
+                If totalRows >= maxRows Then Exit For
+            End If
+        Next row
+        
+        If totalRows >= maxRows Then Exit Do
+        
+        On Error Resume Next
+        Set nextBtn = driver.FindElementById("table_next")
+        If nextBtn Is Nothing Then Exit Do
+        
+        If InStr(1, nextBtn.GetAttribute("class"), "disabled", vbTextCompare) > 0 Then
+            Exit Do
+        End If
+        
+        nextBtn.Click
+        Application.Wait Now + TimeSerial(0, 0, 1)
+        pageCount = pageCount + 1
+    Loop
+    
+    driver.Quit
+    
+    If foundRows.Count = 0 Then
+        ExtractDataFromSite = False
+        Exit Function
+    End If
+    
+    rowIdx = foundRows.Count
+    colCount = UBound(foundRows(1)) + 1
+    
+    ReDim DataArr(0 To rowIdx - 1, 0 To colCount - 1)
+    
+    For rowIdx = 1 To foundRows.Count
+        dataLine = foundRows(rowIdx)
+        For colIdx = 0 To colCount - 1
+            DataArr(rowIdx - 1, colIdx) = dataLine(colIdx)
+        Next colIdx
+    Next rowIdx
+    
+    ReDim HeaderArr(0 To colCount - 1)
+    For colIdx = 0 To colCount - 1
+        HeaderArr(colIdx) = "Col" & (colIdx + 1)
+    Next colIdx
+    
+    FilteredArr = DataArr
+    DataLoaded = True
+    ExtractDataFromSite = True
+    Exit Function
+    
+ErrHandler:
+    On Error Resume Next
+    If Not driver Is Nothing Then driver.Quit
+    ExtractDataFromSite = False
+End Function
+
+Public Function LoadExcelToMemory(Optional ByVal filePath As String = "") As Boolean
+    On Error GoTo ErrHandler
+    
+    Dim wb As Workbook
+    Dim ws As Worksheet
+    Dim fileChosen As String
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim i As Long
+    Dim j As Long
+    Dim raw As Variant
+    
+    If filePath = "" Then
+        fileChosen = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm;*.xls), *.xlsx;*.xlsm;*.xls", , "Selecione um arquivo Excel")
+        If fileChosen = "False" Then Exit Function
+    Else
+        fileChosen = filePath
+    End If
+    
+    Set wb = Workbooks.Open(fileChosen, ReadOnly:=True)
+    Set ws = wb.Worksheets(1)
+    
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    
+    If lastRow < 1 Or lastCol < 1 Then
+        wb.Close SaveChanges:=False
+        LoadExcelToMemory = False
+        Exit Function
+    End If
+    
+    raw = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value
+    
+    ReDim DataArr(0 To lastRow - 1, 0 To lastCol - 1)
+    ReDim HeaderArr(0 To lastCol - 1)
+    
+    For i = 1 To lastRow
+        For j = 1 To lastCol
+            If i = 1 Then
+                HeaderArr(j - 1) = CStr(raw(i, j))
+            Else
+                DataArr(i - 2, j - 1) = raw(i, j)
+            End If
+        Next j
+    Next i
+    
+    FilteredArr = DataArr
+    DataLoaded = True
+    
+    wb.Close SaveChanges:=False
+    LoadExcelToMemory = True
+    Exit Function
+    
+ErrHandler:
+    LoadExcelToMemory = False
+End Function
+
+Public Function ApplyFilters(ByVal escola As String, ByVal estado As String, ByVal cidade As String, ByVal notaMin As Variant, ByVal notaMax As Variant) As Boolean
+    On Error GoTo ErrHandler
+    
+    If Not DataLoaded Then Exit Function
+    
+    Dim i As Long, j As Long
+    Dim totalRows As Long, totalCols As Long
+    Dim matches As Boolean
+    Dim textFound As Boolean
+    Dim valText As String
+    Dim valNum As Double
+    Dim minOK As Boolean, maxOK As Boolean
+    
+    Dim outputRows As Long
+    Dim tmpArr() As Variant
+    Dim out() As Variant
+    
+    totalRows = SafeRows(DataArr)
+    totalCols = SafeCols(DataArr)
+    
+    If totalRows = 0 Or totalCols = 0 Then
+        ReDim FilteredArr(0 To -1, 0 To -1)
+        ApplyFilters = True
+        Exit Function
+    End If
+    
+    ReDim out(0 To totalCols - 1, 0 To 0)
+    outputRows = 0
+    
+    For i = 0 To totalRows - 1
+        matches = True
+        
+        If Len(Trim$(escola)) > 0 Then
+            textFound = False
+            For j = 0 To totalCols - 1
+                valText = CStr(DataArr(i, j))
+                If InStr(1, LCase$(valText), LCase$(escola), vbTextCompare) > 0 Then
+                    textFound = True
+                    Exit For
+                End If
+            Next j
+            If Not textFound Then matches = False
+        End If
+        
+        If matches And Len(Trim$(estado)) > 0 Then
+            textFound = False
+            For j = 0 To totalCols - 1
+                valText = CStr(DataArr(i, j))
+                If InStr(1, LCase$(valText), LCase$(estado), vbTextCompare) > 0 Then
+                    textFound = True
+                    Exit For
+                End If
+            Next j
+            If Not textFound Then matches = False
+        End If
+        
+        If matches And Len(Trim$(cidade)) > 0 Then
+            textFound = False
+            For j = 0 To totalCols - 1
+                valText = CStr(DataArr(i, j))
+                If InStr(1, LCase$(valText), LCase$(cidade), vbTextCompare) > 0 Then
+                    textFound = True
+                    Exit For
+                End If
+            Next j
+            If Not textFound Then matches = False
+        End If
+        
+        If matches And Not IsEmpty(notaMin) Then
+            minOK = False
+            For j = 0 To totalCols - 1
+                If IsNumeric(DataArr(i, j)) Then
+                    valNum = CDbl(DataArr(i, j))
+                    If valNum >= CDbl(notaMin) Then
+                        minOK = True
+                        Exit For
+                    End If
+                End If
+            Next j
+            If Not minOK Then matches = False
+        End If
+        
+        If matches And Not IsEmpty(notaMax) Then
+            maxOK = False
+            For j = 0 To totalCols - 1
+                If IsNumeric(DataArr(i, j)) Then
+                    valNum = CDbl(DataArr(i, j))
+                    If valNum <= CDbl(notaMax) Then
+                        maxOK = True
+                        Exit For
+                    End If
+                End If
+            Next j
+            If Not maxOK Then matches = False
+        End If
+        
+        If matches Then
+            If outputRows = 0 Then
+                ReDim out(0 To totalCols - 1, 0 To 0)
+            Else
+                ReDim Preserve out(0 To totalCols - 1, 0 To outputRows)
+            End If
+            
+            For j = 0 To totalCols - 1
+                out(j, outputRows) = DataArr(i, j)
+            Next j
+            outputRows = outputRows + 1
+        End If
+    Next i
+    
+    If outputRows = 0 Then
+        ReDim FilteredArr(0 To -1, 0 To -1)
+    Else
+        ReDim FilteredArr(0 To outputRows - 1, 0 To totalCols - 1)
+        For i = 0 To outputRows - 1
+            For j = 0 To totalCols - 1
+                FilteredArr(i, j) = out(j, i)
+            Next j
+        Next i
+    End If
+    
+    ApplyFilters = True
+    Exit Function
+    
+ErrHandler:
+    ApplyFilters = False
+End Function
+
+Public Sub ClearFilters()
+    If DataLoaded Then
+        FilteredArr = DataArr
+    End If
+End Sub
+
+Public Function ExportFilteredToFile(Optional ByVal initialName As String = "") As Boolean
+    On Error GoTo ErrHandler
+    
+    If Not DataLoaded Then Exit Function
+    
+    Dim savePath As Variant
+    Dim wb As Workbook
+    Dim ws As Worksheet
+    Dim totalRows As Long
+    Dim totalCols As Long
+    Dim i As Long, j As Long
+    Dim outArr As Variant
+    
+    If initialName = "" Then
+        initialName = "ENEM_Filtrados_" & Format(Now, "yyyy-mm-dd_hh-nn-ss")
+    End If
+    
+    savePath = Application.GetSaveAsFilename(InitialFileName:=initialName, FileFilter:="Excel Files (*.xlsx), *.xlsx")
+    If savePath = False Then Exit Function
+    
+    Set wb = Workbooks.Add
+    Set ws = wb.Sheets(1)
+    
+    totalRows = SafeRows(FilteredArr)
+    totalCols = SafeCols(FilteredArr)
+    
+    If totalCols > 0 Then
+        For j = 0 To UBound(HeaderArr)
+            ws.Cells(1, j + 1).Value = HeaderArr(j)
+        Next j
+    End If
+    
+    If totalRows > 0 And totalCols > 0 Then
+        ReDim outArr(1 To totalRows, 1 To totalCols)
+        For i = 1 To totalRows
+            For j = 1 To totalCols
+                outArr(i, j) = FilteredArr(i - 1, j - 1)
+            Next j
+        Next i
+        ws.Range(ws.Cells(2, 1), ws.Cells(1 + totalRows, totalCols)).Value = outArr
+    End If
+    
+    Application.DisplayAlerts = False
+    wb.SaveAs savePath, FileFormat:=51
+    Application.DisplayAlerts = True
+    
+    wb.Close SaveChanges:=False
+    ExportFilteredToFile = True
+    Exit Function
+    
+ErrHandler:
+    ExportFilteredToFile = False
+End Function
+==============================================================================================================================
